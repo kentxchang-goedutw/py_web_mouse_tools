@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# User config
+config.json
+
+# PyInstaller
+*.spec
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Old binaries
+Web_mouse_tools.exe
