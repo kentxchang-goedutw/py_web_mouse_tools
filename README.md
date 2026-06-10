@@ -122,7 +122,7 @@ python server.py
 
 畫面說明：
 
-![介面說明](screenshot.png)
+![介面說明](UI.png)
 
 1. **伺服器 IP** — 顯示電腦在區網內的 IP 位址
 2. **QR Code** — 手機掃描此碼開啟觸控板網頁
