@@ -11,13 +11,25 @@ import os
 import sys
 import json
 import time
+import ctypes
+import pystray
+import logging
 
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 import pyautogui
 
-# Suppress Pygame welcome message
+logging.getLogger('werkzeug').addFilter(
+    lambda r: not (r.levelno == logging.ERROR and 'write() before start_response' in r.getMessage()))
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 if getattr(sys, 'frozen', False):
     APP_DIR = sys._MEIPASS
@@ -45,7 +57,7 @@ def save_config(pw):
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR)
 app.config['SECRET_KEY'] = 'virtual-mouse-secret!'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 password = ""
 authenticated_clients = set()
@@ -216,12 +228,20 @@ def handle_disconnect():
     except Exception:
         pass
 
+def get_dpi_scale(root):
+    try:
+        dpi = ctypes.windll.user32.GetDpiForWindow(root.winfo_id())
+        return dpi / 96.0
+    except Exception:
+        return 1.0
+
+def scale_val(v, s):
+    return max(1, int(round(v * s)))
+
 class VirtualMouseGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Virtual Mouse Server")
-        self.root.geometry("420x620")
-        self.root.resizable(False, False)
         self.root.configure(bg="#f0f0f0")
 
         cfg = load_config()
@@ -230,73 +250,113 @@ class VirtualMouseGUI:
         self.server_running = False
         self.flask_thread = None
 
+        s = get_dpi_scale(root)
+        self.s = s
+        bw = scale_val(420, s)
+        bh = scale_val(640, s)
+        self.root.geometry(f"{bw}x{bh}")
+        self.root.resizable(False, False)
+        self.root.minsize(bw, bh)
+
         self.setup_ui()
         self.update_ip_display()
 
     def setup_ui(self):
-        title = tk.Label(self.root, text="🖱 虛擬滑鼠伺服器",
-                         font=("Arial", 16, "bold"), bg="#f0f0f0")
-        title.pack(pady=(12, 2))
+        s = self.s
+        F = lambda pt: ("Microsoft JhengHei", scale_val(pt, s))
+        bg = "#f0f0f0"
 
-        ip_frame = tk.Frame(self.root, bg="#f0f0f0")
-        ip_frame.pack(pady=2)
-        tk.Label(ip_frame, text="伺服器 IP:", font=("Arial", 10),
-                 bg="#f0f0f0").pack(side=tk.LEFT)
-        self.ip_label = tk.Label(ip_frame, text="", font=("Arial", 10, "bold"),
-                                 fg="#2563eb", bg="#f0f0f0")
-        self.ip_label.pack(side=tk.LEFT, padx=5)
+        tk.Label(self.root, text="🖱 虛擬滑鼠伺服器",
+                 font=F(16) + ("bold",), bg=bg).pack(pady=scale_val(12, s))
 
-        port_frame = tk.Frame(self.root, bg="#f0f0f0")
-        port_frame.pack(pady=1)
-        tk.Label(port_frame, text="連接埠: 5000", font=("Arial", 9),
-                 fg="gray", bg="#f0f0f0").pack()
+        ip_frame = tk.Frame(self.root, bg=bg)
+        ip_frame.pack(pady=scale_val(2, s))
+        tk.Label(ip_frame, text="伺服器 IP:", font=F(11),
+                 bg=bg).pack(side=tk.LEFT)
+        self.ip_label = tk.Label(ip_frame, text="", font=F(11),
+                                 fg="#2563eb", bg=bg)
+        self.ip_label.pack(side=tk.LEFT, padx=scale_val(5, s))
 
-        qr_container = tk.Frame(self.root, bg="white", bd=2, relief=tk.RIDGE)
-        qr_container.pack(pady=8)
+        port_frame = tk.Frame(self.root, bg=bg)
+        port_frame.pack(pady=scale_val(1, s))
+        tk.Label(port_frame, text="連接埠: 5000", font=F(9),
+                 fg="gray", bg=bg).pack()
+
+        qr_container = tk.Frame(self.root, bg="white", bd=scale_val(2, s), relief=tk.RIDGE)
+        qr_container.pack(pady=scale_val(8, s))
         self.qr_label = tk.Label(qr_container, bg="white")
-        self.qr_label.pack(padx=10, pady=10)
+        pad = scale_val(10, s)
+        self.qr_label.pack(padx=pad, pady=pad)
 
-        self.url_label = tk.Label(self.root, text="", font=("Arial", 9),
-                                  fg="gray", bg="#f0f0f0")
+        self.url_label = tk.Label(self.root, text="", font=F(9),
+                                  fg="gray", bg=bg)
         self.url_label.pack()
 
         pw_frame = tk.LabelFrame(self.root, text=" 連線密碼 (選填) ",
-                                 padx=10, pady=8, bg="#f0f0f0", font=("Arial", 9))
-        pw_frame.pack(pady=6, padx=20, fill=tk.X)
+                                 padx=scale_val(12, s), pady=scale_val(10, s),
+                                 bg=bg, font=F(10))
+        pw_frame.pack(pady=scale_val(6, s), padx=scale_val(24, s), fill=tk.X)
 
-        pw_row = tk.Frame(pw_frame, bg="#f0f0f0")
+        pw_row = tk.Frame(pw_frame, bg=bg)
         pw_row.pack()
-        tk.Label(pw_row, text="密碼:", bg="#f0f0f0",
-                 font=("Arial", 9)).pack(side=tk.LEFT)
+        tk.Label(pw_row, text="密碼:", bg=bg, font=F(10)).pack(side=tk.LEFT)
         self.pw_entry = tk.Entry(pw_row, textvariable=self.password_var,
-                                 show="*", width=18, font=("Arial", 9))
-        self.pw_entry.pack(side=tk.LEFT, padx=5)
+                                 show="*", width=scale_val(18, s), font=F(10))
+        self.pw_entry.pack(side=tk.LEFT, padx=scale_val(5, s))
 
         self.show_pw_var = tk.IntVar()
         tk.Checkbutton(pw_row, text="顯示", variable=self.show_pw_var,
-                       command=self.toggle_password,
-                       bg="#f0f0f0").pack(side=tk.LEFT)
+                       command=self.toggle_password, bg=bg).pack(side=tk.LEFT)
 
-        btn_frame = tk.Frame(self.root, bg="#f0f0f0")
-        btn_frame.pack(pady=8)
+        btn_frame = tk.Frame(self.root, bg=bg)
+        btn_frame.pack(pady=scale_val(8, s))
 
         self.start_btn = tk.Button(btn_frame, text="啟動伺服器",
                                    command=self.start_server,
-                                   bg="#16a34a", fg="white", width=12,
-                                   font=("Arial", 10, "bold"), cursor="hand2")
-        self.start_btn.pack(side=tk.LEFT, padx=4)
+                                   bg="#16a34a", fg="white",
+                                   width=scale_val(12, s),
+                                   font=F(10) + ("bold",), cursor="hand2")
+        self.start_btn.pack(side=tk.LEFT, padx=scale_val(4, s))
 
         self.stop_btn = tk.Button(btn_frame, text="停止伺服器",
                                   command=self.stop_server,
-                                  bg="#dc2626", fg="white", width=12,
-                                  state=tk.DISABLED, font=("Arial", 10, "bold"),
+                                  bg="#dc2626", fg="white",
+                                  width=scale_val(12, s),
+                                  state=tk.DISABLED, font=F(10) + ("bold",),
                                   cursor="hand2")
-        self.stop_btn.pack(side=tk.LEFT, padx=4)
+        self.stop_btn.pack(side=tk.LEFT, padx=scale_val(4, s))
 
         self.status_label = tk.Label(self.root, text="狀態: 已停止",
-                                     fg="#dc2626", bg="#f0f0f0",
-                                     font=("Arial", 10, "bold"))
-        self.status_label.pack(pady=2)
+                                     fg="#dc2626", bg=bg,
+                                     font=F(10) + ("bold",))
+        self.status_label.pack(pady=scale_val(2, s))
+
+        self.gesture_btn = tk.Button(self.root, text="📖 手勢說明",
+                                     command=self.show_gesture_popup,
+                                     bg="#6366f1", fg="white",
+                                     font=F(9) + ("bold",), cursor="hand2")
+        self.gesture_btn.pack(pady=scale_val(4, s))
+
+        footer_frame = tk.Frame(self.root, bg=bg)
+        footer_frame.pack(pady=scale_val(2, s))
+        footer = tk.Label(footer_frame,
+                          text="Made by 阿剛老師 | 本軟體採用 CC BY-NC 4.0 授權",
+                          font=F(8), fg="#888", bg=bg, cursor="hand2")
+        footer.pack()
+        footer.bind("<Button-1>", lambda e: os.system('start https://kentxchang.blogspot.tw'))
+
+    def show_gesture_popup(self):
+        s = self.s
+        F = lambda pt: ("Microsoft JhengHei", scale_val(pt, s))
+        top = tk.Toplevel(self.root)
+        top.title("手勢說明")
+        top.configure(bg="#fef9c3")
+        bw = scale_val(360, s)
+        bh = scale_val(350, s)
+        top.geometry(f"{bw}x{bh}")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
 
         info_text = (
             "使用說明:\n"
@@ -314,20 +374,13 @@ class VirtualMouseGUI:
             "  \u2022 3 指拖曳  \u2192 左鍵拖曳\n"
             "  \u2022 3 指滑動  \u2192 切換視窗"
         )
-        info_frame = tk.Frame(self.root, bg="#fef9c3", bd=1, relief=tk.RIDGE)
-        info_frame.pack(pady=4, padx=20, fill=tk.BOTH, expand=True)
-        info = tk.Label(info_frame, text=info_text, justify=tk.LEFT,
-                        bg="#fef9c3", font=("Consolas", 8))
-        info.pack(padx=6, pady=6)
+        info = tk.Label(top, text=info_text, justify=tk.LEFT,
+                        bg="#fef9c3", font=F(9))
+        info.pack(padx=scale_val(16, s), pady=scale_val(16, s))
 
-        footer_frame = tk.Frame(self.root, bg="#f0f0f0")
-        footer_frame.pack(pady=(2, 6))
-        footer = tk.Label(footer_frame,
-                          text="Made by 阿剛老師 | 本軟體採用 CC BY-NC 4.0 授權",
-                          font=("Arial", 8), fg="#888", bg="#f0f0f0",
-                          cursor="hand2")
-        footer.pack()
-        footer.bind("<Button-1>", lambda e: os.system('start https://kentxchang.blogspot.tw'))
+        tk.Button(top, text="關閉", command=top.destroy,
+                  bg="#6366f1", fg="white",
+                  font=F(9) + ("bold",), cursor="hand2").pack(pady=scale_val(8, s))
 
     def toggle_password(self):
         self.pw_entry.config(show="" if self.show_pw_var.get() else "*")
@@ -343,10 +396,48 @@ class VirtualMouseGUI:
         ip = get_local_ip()
         url = f"http://{ip}:5000"
         qr_img = generate_qr_img(url)
-        qr_img = qr_img.resize((180, 180), Image.Resampling.NEAREST)
+        qs = scale_val(180, self.s)
+        qr_img = qr_img.resize((qs, qs), Image.Resampling.NEAREST)
         self.qr_photo = ImageTk.PhotoImage(qr_img)
         self.qr_label.config(image=self.qr_photo)
         self.url_label.config(text=url)
+
+    def setup_tray(self):
+        ico_path = os.path.join(APP_DIR, 'icon.ico')
+        if not os.path.exists(ico_path):
+            return
+        img = Image.open(ico_path)
+        menu = pystray.Menu(
+            pystray.MenuItem("顯示視窗", self.show_window, default=True),
+            pystray.MenuItem("結束", self.quit_app),
+        )
+        self.tray_icon = pystray.Icon("virtual_mouse", img, "虛擬滑鼠伺服器", menu)
+        self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
+        self.tray_thread.start()
+
+    def show_window(self, icon=None, item=None):
+        if icon:
+            icon.stop()
+        self.tray_minimized = False
+        self.root.after(0, self._restore_window)
+
+    def _restore_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def on_minimize(self):
+        if getattr(self, 'tray_minimized', False):
+            return
+        self.tray_minimized = True
+        self.root.withdraw()
+        if not hasattr(self, 'tray_icon') or not self.tray_icon:
+            self.setup_tray()
+
+    def quit_app(self, icon=None, item=None):
+        if icon:
+            icon.stop()
+        self.root.after(100, lambda: os._exit(0))
 
     def start_server(self):
         global password, SERVER_STARTED
@@ -380,5 +471,10 @@ if __name__ == '__main__':
     except Exception:
         pass
     gui = VirtualMouseGUI(root)
-    root.protocol("WM_DELETE_WINDOW", lambda: os._exit(0))
+    orig_iconify = root.iconify
+    def tray_minimize():
+        gui.on_minimize()
+        gui.tray_minimized = True
+    root.iconify = tray_minimize
+    root.protocol("WM_DELETE_WINDOW", tray_minimize)
     root.mainloop()
